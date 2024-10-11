@@ -3,13 +3,15 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
+#include <stdint.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <linux/perf_event.h>
 
+#define L1D_PEND_MISS_FB_FULL_EVENT 0x48
+#define L1D_PEND_MISS_FB_FULL_UMASK 0x02
 
 const size_t memsize = 1024*1024*1024;
 const size_t elems = memsize / sizeof(uint32_t);
@@ -253,11 +255,85 @@ void randomize (uint32_t **arr, uint32_t n)
     }
 }
 
+int setup_perf_event(int event_code, int event_type) {
+    struct perf_event_attr pea;
+    memset(&pea, 0, sizeof(pea));
+
+    pea.type = event_type;  // Use raw type for custom events
+
+    pea.config = event_code;	
+
+    pea.size = sizeof(pea);
+    pea.disabled = 1;
+    pea.exclude_kernel = 1;   // Exclude kernel events
+    pea.exclude_hv = 1;       // Exclude hypervisor events
+
+    int fd = perf_event_open(&pea, 0, -1, -1, 0);
+    if (fd == -1) {
+        perror("perf_event_open");
+        exit(1);
+    }
+    return fd;
+}
+
+
+void disable_performance_counters(int num_events, int *fds) {
+
+    for (int i = 0; i < num_events; ++i) {
+	ioctl(fds[i], PERF_EVENT_IOC_DISABLE, 0);
+    }
+
+}
+
+void enable_performance_counters(int num_events, int *fds) {
+
+    for (int i = 0; i < num_events; ++i) {
+        ioctl(fds[i], PERF_EVENT_IOC_RESET, 0);
+        ioctl(fds[i], PERF_EVENT_IOC_ENABLE, 0);
+    }
+
+}
+
+void read_event(int num_events, int *fds, long long int (*pc)[20], int h) {
+
+    for (int i = 0; i < num_events; ++i) { 
+        read(fds[i], &pc[i][h], sizeof(pc[i][h]));
+    }
+    
+}
+
+void post_processing(int num_events, long long int (*pc)[20]) {
+
+    //Performance Speed-up
+    for (uint32_t i = 0; i < 10; i++) {
+	printf("Performance Speed-up for H%d (Prefetch over Non-Prefetch) =%f\n", i, (double)pc[0][i]/pc[0][i+10]);
+    } 
+
+    //Fill Buffer Full Cycles (Prefetch)
+    for (uint32_t i = 0; i < 10; i++) {
+	printf("Fill Buffer Full Cycles for H%d Non Prefetch=%lld\n", i, pc[1][i]);
+    }
+
+    //Fill Buffer Full Cycles (Non-Prefetch)
+    for (uint32_t i = 10; i < 20; i++) {
+	printf("Fill Buffer Full Cycles for H%d Prefetch=%lld\n", i-10, pc[1][i]);
+    }
+
+}
+
+void close_fds(int num_events, int *fds) {
+
+    for (int i = 0; i < num_events; ++i) {
+	close(fds[i]);
+    }
+
+}    
+
 int main() {
 
     uint32_t* data = (uint32_t*)malloc(memsize);
     uint32_t** data_pointer = (uint32_t**)malloc(elems*sizeof(uint32_t*));
-    uint64_t sum1, sum2;
+    uint64_t sum1;
 
     for (uint32_t i = 0; i < elems; i++) {
     	data[i] = i;
@@ -266,231 +342,159 @@ int main() {
 
     randomize(data_pointer, elems);
 
-    struct perf_event_attr pe;
-    long long count;
-    int fd;
+    long int event_codes[] = {PERF_COUNT_HW_CPU_CYCLES, L1D_PEND_MISS_FB_FULL_EVENT | L1D_PEND_MISS_FB_FULL_UMASK << 8}; // Example event codes
+    const char *event_names[] = {"Total cyles", "Fill Buffer Full"};
+    long int event_types[] = {PERF_TYPE_HARDWARE, PERF_TYPE_RAW};
 
-    memset(&pe, 0, sizeof(struct perf_event_attr));
-    pe.type = PERF_TYPE_HARDWARE;
-    pe.size = sizeof(struct perf_event_attr);
-    pe.config = PERF_COUNT_HW_CPU_CYCLES; // Change this to your specific counter
-    pe.disabled = 1;
-    pe.exclude_kernel = 1;
-    pe.exclude_hv = 1;
+    // Number of events
+    size_t num_events = sizeof(event_codes) / sizeof(event_codes[0]);
 
-    fd = perf_event_open(&pe, 0, -1, -1, 0);
-    if (fd == -1) {
-        fprintf(stderr, "Error opening leader %llx\n", pe.config);
-        exit(EXIT_FAILURE);
+    // Array to hold file descriptors
+    int fds[num_events];
+
+    // Set up performance counters
+    for (size_t i = 0; i < num_events; ++i) {
+        fds[i] = setup_perf_event(event_codes[i], event_types[i]);
     }
+
+    //Array to store pc
+    long long int pc[num_events][20];
 
     int32_t N = 0;
 
         while (N < 10) { 
             if (N == 0) {
-	            printf("Non Prefetch H0\n");
-	        	ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-	            sum1 = time_nonprefetch_h0(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-    		    read(fd, &count, sizeof(long long));
-    		    printf("Non Prefetch Counter value: %lld\n", count);
-	            printf("Non Prefetch H0 sum %lu\n", sum1);
+	        printf("Non-Prefetch H0\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h0(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 0);
+            } else if (N == 1) {
+	        printf("Non-Prefetch H1\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h1(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 1);
+            } else if (N == 2) {
+	        printf("Non-Prefetch H2\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h2(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 2);
+            } else if (N == 3) {
+	        printf("Non-Prefetch H3\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h3(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 3);
+            } else if (N == 4) {
+	        printf("Non-Prefetch H4\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h4(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 4);
+            } else if (N == 5) {
+	        printf("Non-Prefetch H5\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h5(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 5);
+            } else if (N == 6) {
+	        printf("Non-Prefetch H6\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h6(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 6);
+            } else if (N == 7) {
+	        printf("Non-Prefetch H7\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h7(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 7);
+            } else if (N == 8) {
+	        printf("Non-Prefetch H8 \n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h8(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 8);
+            } else if (N == 9) {
+	        printf("Non-Prefetch H9\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h9(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 9);
             }
-            if (N == 1) {
-	            printf("Non Prefetch H1\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-                sum1 = time_nonprefetch_h1(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-        		read(fd, &count, sizeof(long long));
-    	    	printf("Non Prefetch Counter value: %lld\n", count);
-	            printf("Non Prefetch H1 sum %lu\n", sum1);
-            }
-            else if (N == 2) {
-	            printf("Non Prefetch H2\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-                sum1 = time_nonprefetch_h2(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Non Prefetch Counter value: %lld\n", count);
-	            printf("Non Prefetch H2 sum %lu\n", sum1);
-	        }
-            else if (N == 3) {
-	            printf("Non Prefetch H3\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-                sum1 = time_nonprefetch_h3(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Non Prefetch Counter value: %lld\n", count);
-	            printf("Non Prefetch H3 sum %lu\n", sum1);
-    	    }
-            else if (N == 4) {
-	            printf("Non Prefetch H4\n");
-	        	ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-                sum1 = time_nonprefetch_h4(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-	        	read(fd, &count, sizeof(long long));
-    		    printf("Non Prefetch Counter value: %lld\n", count);
-	            printf("Non Prefetch H4 sum %lu\n", sum1);
-	        }
-            else if (N == 5) {
-	            printf("Non Prefetch H5\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-                sum1 = time_nonprefetch_h5(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-        		read(fd, &count, sizeof(long long));
-    	    	printf("Non Prefetch Counter value: %lld\n", count);
-	            printf("Non Prefetch H5 sum %lu\n", sum1);
-	        }
-            else if (N == 6) {
-	            printf("Non Prefetch H6\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-                sum1 = time_nonprefetch_h6(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Non Prefetch Counter value: %lld\n", count);
-	            printf("Non Prefetch H6 sum %lu\n", sum1);
-	        }
-            if (N == 7) {
-		        printf("Non Prefetch H7\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum1 = time_nonprefetch_h7(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Non Prefetch Counter value: %lld\n", count);
-        		printf("Non Prefetch H7 sum %lu\n", sum1);
-	        }
-            else if (N == 8) {
-	            printf("Non Prefetch H8\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-                sum1 = time_nonprefetch_h8(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Non Prefetch Counter value: %lld\n", count);
-	            printf("Non Prefetch H8 sum %lu\n", sum1);
-	        }
-            else if (N == 9) {
-	            printf("Non Prefetch H9\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-                sum1 = time_nonprefetch_h9(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-	        	read(fd, &count, sizeof(long long));
-    		    printf("Non Prefetch Counter value: %lld\n", count);
-	            printf("Non Prefetch H9 sum %lu\n", sum1);
-	        }
-            if (N == 0) {
-	            printf("Prefetch H0\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h0(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H0 sum %lu\n", sum2);
-	        }
-            if (N == 1) {
-	            printf("Prefetch H1\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h1(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H1 sum %lu\n", sum2);
-	        }
-            else if (N == 2) {    
-	            printf("Prefetch H2\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h2(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H2 sum %lu\n", sum2);
-	        }
-            else if (N == 3) {
-	            printf("Prefetch H3\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h3(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H3 sum %lu\n", sum2);
-	        }
-            else if (N == 4) {
-	            printf("Prefetch H4\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h4(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H4 sum %lu\n", sum2);
-	        }
-            else if (N == 5) {
-	            printf("Prefetch H5\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h5(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H5 sum %lu\n", sum2);
-	        }
-            else if (N == 6) {
-	            printf("Prefetch H6\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h6(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-	        	read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H6 sum %lu\n", sum2);
-	        }
-            else if (N == 7) {
-	            printf("Prefetch H7\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h7(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H7 sum %lu\n", sum2);
-	        }
-            else if (N == 8) {
-	            printf("Prefetch H8\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h8(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H8 sum %lu\n", sum2);
-	        }
-            else if (N == 9) {
-	            printf("Prefetch H9\n");
-	    	    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            	sum2 = time_prefetch_h9(data_pointer);
-            	ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-		        read(fd, &count, sizeof(long long));
-    		    printf("Prefetch Counter value: %lld\n", count);
-	            printf("Prefetch H9 sum %lu\n", sum2);
-	        }
+	    N++;
+	}
 
-            N++;
+	N = 0;
+	while (N < 10) {
+            if (N == 0) {
+	        printf("Prefetch H0\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h0(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 10);
+            } else if (N == 1) {
+	        printf("Prefetch H1\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h1(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 11);
+            } else if (N == 2) {
+	        printf("Prefetch H2\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h2(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 12);
+            } else if (N == 3) {
+	        printf("Prefetch H3\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h3(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 13);
+            } else if (N == 4) {
+	        printf("Prefetch H4\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h4(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 14);
+            } else if (N == 5) {
+	        printf("Prefetch H5\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h5(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 15);
+            } else if (N == 6) {
+	        printf("Prefetch H6\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h6(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 16);
+            } else if (N == 7) {
+	        printf("Prefetch H7\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h7(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 17);
+            } else if (N == 8) {
+	        printf("Prefetch H8 \n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h8(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 18);
+            } else if (N == 9) {
+	        printf("Prefetch H9\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_prefetch_h9(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 19);
+            }
+	   
+	    N++;
 
         }
 
-    	close(fd);
+	post_processing(num_events, pc);
+
 }
