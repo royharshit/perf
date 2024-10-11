@@ -307,11 +307,11 @@ void read_event(int num_events, int *fds, long long int (*pc)[20], int h) {
 void post_processing(int num_events, long long int (*pc)[20]) {
 
     for (uint32_t i = 0; i < 10; i++) {
-	    printf("L1 Mshr Non-Prefetch) H%d = %f\n", i, (double)pc[1][i]/pc[0][i]);
+	    printf("L2 Mshr Non-Prefetch) H%d = %f\n", i, (double)pc[1][i]/pc[0][i]);
     } 
 
     for (uint32_t i = 10; i < 20; i++) {
-	    printf("L1 Mshr Prefetch) H%d = %f\n", i-10, (double)pc[1][i]/pc[0][i]);
+	    printf("L2 Mshr Prefetch) H%d = %f\n", i-10, (double)pc[1][i]/pc[0][i]);
     } 
 
 }
