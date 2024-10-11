@@ -2,29 +2,29 @@ CC = gcc
 CXX = g++
 RM = rm -f
 
-SRCS = hw_cycles.c
-OBJS = hw_cycles
+SRCS = hw_cycles.c l2_mshrs.c l1_mshrs.c
+OBJS = hw_cycles l2_mshrs l1_mshrs
 
-SRCS_L2 = l2_mshrs.c
-OBJS_L2 = l2_mshrs
+# Target for building all executables
+all: $(OBJS)
 
-# Target for building the main executable
-$(OBJS): $(SRCS)
-	$(CC) -o $(OBJS) $(SRCS)
+$(OBJS): % : %.c
+	$(CC) -o $@ $<
 
-# Target for building the L2 executable
-$(OBJS_L2): $(SRCS_L2)
-	$(CC) -o $(OBJS_L2) $(SRCS_L2)
+# Target for running individual executables
+run_hw_cycles: hw_cycles
+	sudo ./hw_cycles > cycles.txt
 
-# Target for running the main executable
-run: $(OBJS)
-	./$(OBJS)
+run_l2: l2_mshrs
+	sudo ./l2_mshrs > l2_mshrs.txt
 
-# Target for running the L2 executable
-run_l2: $(OBJS_L2)
-	./$(OBJS_L2)
+run_l1: l1_mshrs
+	sudo ./l1_mshrs > l1_mshrs.txt
+
+# Target for running all executables
+run_all: run_hw_cycles run_l2 run_l1
 
 # Target for cleaning up
 clean:
-	$(RM) $(OBJS) $(OBJS_L2)
+	$(RM) $(OBJS)
 
