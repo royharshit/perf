@@ -5,6 +5,7 @@
 # Intel X86 -
 # 1 - Performance Speed-up Prefetch over Non-prefetch
 # 2 - No. of L1 Fill Buffer Full Cycles 
+# 3 - Avg L2 Mshrs/Fill Buffer Occupancy
 
 # ARM x86
 # 1 - Performance Speed-up Prefetch over Non-prefetch
