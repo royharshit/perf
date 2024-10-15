@@ -17,7 +17,7 @@ $(TARGET): $(SRC)
 # Rule to run the executable
 .PHONY: run
 run:
-	./$(TARGET)
+	sudo ./$(TARGET)
 
 # Rule to clean up the build files
 .PHONY: clean

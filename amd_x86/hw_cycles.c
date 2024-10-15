@@ -3,13 +3,15 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
+#include <stdint.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <linux/perf_event.h>
 
+#define L1D_PEND_MISS_FB_FULL_EVENT 0x48
+#define L1D_PEND_MISS_FB_FULL_UMASK 0x02
 
 const size_t memsize = 1024*1024*1024;
 const size_t elems = memsize / sizeof(uint32_t);
@@ -259,7 +261,7 @@ int setup_perf_event(int event_code, int event_type) {
 
     pea.type = event_type;  // Use raw type for custom events
 
-    pea.config = event_code;
+    pea.config = event_code;	
 
     pea.size = sizeof(pea);
     pea.disabled = 1;
@@ -273,6 +275,7 @@ int setup_perf_event(int event_code, int event_type) {
     }
     return fd;
 }
+
 
 void disable_performance_counters(int num_events, int *fds) {
 
@@ -306,7 +309,25 @@ void post_processing(int num_events, long long int (*pc)[20]) {
 	printf("Performance Speed-up for H%d (Prefetch over Non-Prefetch) =%f\n", i, (double)pc[0][i]/pc[0][i+10]);
     } 
 
+    //Avg MAB Count (Non Prefetch)
+    for (uint32_t i = 0; i < 10; i++) {
+	printf("Avg L1 MAB Count for H%d Non Prefetch=%f\n", i, (double)pc[1][i]/pc[0][i]);
+    }
+
+    //Avg MAB Count (Prefetch)
+    for (uint32_t i = 10; i < 20; i++) {
+	printf("Avg L1 MAB count: H%d Prefetch=%f\n", i-10, (double)pc[1][i]/pc[0][i]);
+    }
+
 }
+
+void close_fds(int num_events, int *fds) {
+
+    for (int i = 0; i < num_events; ++i) {
+	close(fds[i]);
+    }
+
+}    
 
 int main() {
 
@@ -321,9 +342,9 @@ int main() {
 
     randomize(data_pointer, elems);
 
-    long int event_codes[] = {PERF_COUNT_HW_CPU_CYCLES}; // Example event codes
-    const char *event_names[] = {"Total cyles"};
-    long int event_types[] = {PERF_TYPE_HARDWARE};
+    long int event_codes[] = {PERF_COUNT_HW_CPU_CYCLES, 0x05F}; // Example event codes
+    const char *event_names[] = {"Total cyles", "Avg MAB Count"};
+    long int event_types[] = {PERF_TYPE_HARDWARE, PERF_TYPE_RAW};
 
     // Number of events
     size_t num_events = sizeof(event_codes) / sizeof(event_codes[0]);
@@ -341,70 +362,70 @@ int main() {
 
     int32_t N = 0;
 
-    while (N < 10) {
-        if (N == 0) {
-	    printf("Non-Prefetch H0\n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h0(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 0);
-        } else if (N == 1) {
-	    printf("Non-Prefetch H1\n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h1(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 1);
-        } else if (N == 2) {
-	    printf("Non-Prefetch H2\n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h2(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 2);
-        } else if (N == 3) {
-	    printf("Non-Prefetch H3\n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h3(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 3);
-        } else if (N == 4) {
-	    printf("Non-Prefetch H4\n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h4(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 4);
-        } else if (N == 5) {
-	    printf("Non-Prefetch H5\n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h5(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 5);
-        } else if (N == 6) {
-	    printf("Non-Prefetch H6\n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h6(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 6);
-        } else if (N == 7) {
-	    printf("Non-Prefetch H7\n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h7(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 7);
-        } else if (N == 8) {
-	    printf("Non-Prefetch H8 \n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h8(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 8);
-        } else if (N == 9) {
-	    printf("Non-Prefetch H9\n");
-	    enable_performance_counters(num_events, fds);
-	    sum1 = time_nonprefetch_h9(data_pointer);
-	    disable_performance_counters(num_events, fds);
-	    read_event(num_events, fds, pc, 9);
-        }
-	N++;
-    }
+        while (N < 10) { 
+            if (N == 0) {
+	        printf("Non-Prefetch H0\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h0(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 0);
+            } else if (N == 1) {
+	        printf("Non-Prefetch H1\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h1(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 1);
+            } else if (N == 2) {
+	        printf("Non-Prefetch H2\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h2(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 2);
+            } else if (N == 3) {
+	        printf("Non-Prefetch H3\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h3(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 3);
+            } else if (N == 4) {
+	        printf("Non-Prefetch H4\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h4(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 4);
+            } else if (N == 5) {
+	        printf("Non-Prefetch H5\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h5(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 5);
+            } else if (N == 6) {
+	        printf("Non-Prefetch H6\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h6(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 6);
+            } else if (N == 7) {
+	        printf("Non-Prefetch H7\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h7(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 7);
+            } else if (N == 8) {
+	        printf("Non-Prefetch H8 \n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h8(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 8);
+            } else if (N == 9) {
+	        printf("Non-Prefetch H9\n");
+		enable_performance_counters(num_events, fds);
+	        sum1 = time_nonprefetch_h9(data_pointer);
+		disable_performance_counters(num_events, fds);
+		read_event(num_events, fds, pc, 9);
+            }
+	    N++;
+	}
 
 	N = 0;
 	while (N < 10) {
@@ -469,10 +490,11 @@ int main() {
 		disable_performance_counters(num_events, fds);
 		read_event(num_events, fds, pc, 19);
             }
-
+	   
 	    N++;
 
         }
 
 	post_processing(num_events, pc);
+
 }
