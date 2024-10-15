@@ -7,7 +7,7 @@
 # 2 - No. of L1 Fill Buffer Full Cycles 
 # 3 - Avg L2 Mshrs/Fill Buffer Occupancy
 
-# ARM x86
+# ARM x64
 # 1 - Performance Speed-up Prefetch over Non-prefetch
 
 # AMD x86
